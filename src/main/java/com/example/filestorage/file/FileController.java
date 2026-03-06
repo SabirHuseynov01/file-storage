@@ -19,7 +19,7 @@ public class FileController {
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<FileMetadata> upload(
             @RequestParam("file") MultipartFile file,
-            @RequestHeader("X-Api-Key") String apiKey) {
+            @RequestHeader("X-API-Key") String apiKey) {
 
         FileMetadata metadata = fileService.uploadFile(file, apiKey);
         return ResponseEntity.ok(metadata);
@@ -32,7 +32,7 @@ public class FileController {
 
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION,
-                        "attachment; filename=\"" + info.getOriginalName() + "\" ")
+                        "attachment; filename=\"" + info.getOriginalName() + "\"")
                 .contentType(MediaType.parseMediaType(
                         info.getContentType() != null ? info.getContentType() : "application/octet-stream"))
                 .body(data);
@@ -47,6 +47,5 @@ public class FileController {
     public ResponseEntity<Void> delete(@PathVariable UUID id) {
         fileService.deleteFile(id);
         return ResponseEntity.noContent().build();
-
     }
 }
