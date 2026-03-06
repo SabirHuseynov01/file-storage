@@ -8,9 +8,9 @@
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.x-green.svg)](https://spring.io/projects/spring-boot)
 [![MinIO](https://img.shields.io/badge/Storage-MinIO-red.svg)](https://min.io)
 
-A robust and scalable **File Storage System** built with Spring Boot, providing secure file upload, download, and management capabilities with MinIO integration.
+A robust and scalable **File Storage System** built with Spring Boot, providing secure file upload, download, and management capabilities with MinIO integration and comprehensive error handling.
 
-[Features](#-features) • [Getting Started](#-getting-started) • [Installation](#-installation) • [API Documentation](#-api-documentation) • [Configuration](#-configuration)
+[Features](#-features) • [Getting Started](#-getting-started) • [Installation](#-installation) • [API Documentation](#-api-documentation) • [Error Handling](#-error-handling)
 
 </div>
 
@@ -18,7 +18,7 @@ A robust and scalable **File Storage System** built with Spring Boot, providing 
 
 ## 📋 Overview
 
-The File Storage System is an enterprise-grade file management platform designed for secure, scalable file operations. Built with Spring Boot and integrated with MinIO for object storage, it provides a RESTful API for file uploads, downloads, deletions, and metadata management. The system uses API key-based authentication to ensure secure access to file operations.
+The File Storage System is an enterprise-grade file management platform designed for secure, scalable file operations. Built with Spring Boot and integrated with MinIO for object storage, it provides a RESTful API for file uploads, downloads, deletions, and metadata management. The system uses API key-based authentication to ensure secure access to file operations and includes comprehensive exception handling for robust error management.
 
 ---
 
@@ -32,6 +32,7 @@ The File Storage System is an enterprise-grade file management platform designed
 - 🪣 **MinIO Integration** - Object storage with MinIO compatibility
 - 📝 **File Tracking** - Track uploaded files, uploader, and timestamps
 - 🔄 **Storage Provider Abstraction** - Pluggable storage backend support
+- ⚠️ **Comprehensive Error Handling** - Global exception handling with detailed error responses
 - 🐳 **Containerized** - Docker and Docker Compose ready
 - 📊 **Scalable Architecture** - Production-ready microservice design
 
@@ -74,7 +75,13 @@ The File Storage System is an enterprise-grade file management platform designed
 - CORS and CSRF configuration
 - Secure request filtering
 
-#### 7. **File Metadata** (`FileMetadata`)
+#### 7. **Global Exception Handler** (`GlobalExceptionHandler`)
+- Centralized exception handling
+- Consistent error response format
+- Proper HTTP status code mapping
+- Comprehensive logging
+
+#### 8. **File Metadata** (`FileMetadata`)
 - JPA entity for file information
 - Tracks original filename, stored name, content type
 - Stores file size, storage provider, and bucket information
@@ -96,7 +103,343 @@ FileService (Business Logic)
 StorageProvider (MinIO)
     ↓
 MinIO Storage / Database
+    ↓
+(Exception Handler catches any errors)
+    ↓
+Standardized Error Response
 ```
+
+---
+
+## ⚠️ Error Handling
+
+The system includes comprehensive exception handling with a centralized `GlobalExceptionHandler` that manages all errors and returns consistent, structured error responses.
+
+### Custom Exceptions
+
+#### 1. **FileNotFoundException**
+Thrown when a requested file is not found in the database or storage.
+
+```java
+public class FileNotFoundException extends RuntimeException {
+    public FileNotFoundException(String fileId) {
+        super("File not found with id: " + fileId);
+    }
+}
+```
+
+**Usage:**
+```java
+FileMetadata metadata = fileRepository.findById(fileID)
+    .orElseThrow(() -> new FileNotFoundException(fileID.toString()));
+```
+
+**Example Response:**
+```json
+{
+  "timestamp": "2026-03-06T10:30:45.123",
+  "status": 404,
+  "error": "Not Found",
+  "message": "File not found with id: 550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+---
+
+#### 2. **StorageException**
+Thrown when there's an error with the storage provider (MinIO operations).
+
+```java
+public class StorageException extends RuntimeException {
+    public StorageException(String message, Throwable cause) {
+        super(message, cause);
+    }
+}
+```
+
+**Usage:**
+```java
+try {
+    minioClient.putObject(...);
+} catch (Exception e) {
+    throw new StorageException("Failed to upload file to MinIO: " + e.getMessage(), e);
+}
+```
+
+**Example Response:**
+```json
+{
+  "timestamp": "2026-03-06T10:30:45.123",
+  "status": 500,
+  "error": "Storage Error",
+  "message": "Failed to upload file to MinIO: Connection timeout"
+}
+```
+
+---
+
+### Exception Handler Mappings
+
+The `GlobalExceptionHandler` maps exceptions to appropriate HTTP status codes:
+
+| Exception | HTTP Status | Status Code | Description |
+|-----------|------------|-------------|-------------|
+| `FileNotFoundException` | NOT_FOUND | 404 | File not found in database or storage |
+| `StorageException` | INTERNAL_SERVER_ERROR | 500 | MinIO or storage operation failed |
+| `MaxUploadSizeExceededException` | PAYLOAD_TOO_LARGE | 413 | Uploaded file exceeds size limit |
+| `IllegalArgumentException` | BAD_REQUEST | 400 | Invalid request parameters |
+| `Exception` (General) | INTERNAL_SERVER_ERROR | 500 | Unexpected/unhandled errors |
+
+---
+
+### Error Response Format
+
+All error responses follow a consistent JSON format:
+
+```json
+{
+  "timestamp": "2026-03-06T10:30:45.123456",
+  "status": 404,
+  "error": "Error Type",
+  "message": "Detailed error message"
+}
+```
+
+**Fields:**
+- `timestamp` - When the error occurred (ISO 8601 format)
+- `status` - HTTP status code
+- `error` - Short error type description
+- `message` - Detailed error message
+
+---
+
+### Detailed Exception Handlers
+
+#### 1. File Not Found Handler (404)
+```java
+@ExceptionHandler(FileNotFoundException.class)
+public ResponseEntity<Map<String, Object>> handleFileNotFound(FileNotFoundException ex) {
+    log.warn("File not found: {}", ex.getMessage());
+    return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of(
+            "timestamp", LocalDateTime.now().toString(),
+            "status", 404,
+            "error", "Not Found",
+            "message", ex.getMessage()
+    ));
+}
+```
+
+**When it occurs:**
+- Attempting to download a non-existent file
+- Requesting metadata for a deleted file
+- Deleting a file that's already removed
+
+---
+
+#### 2. Storage Exception Handler (500)
+```java
+@ExceptionHandler(StorageException.class)
+public ResponseEntity<Map<String, Object>> handleStorageException(StorageException ex) {
+    log.error("Storage error: {}", ex.getMessage(), ex);
+    return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of(
+            "timestamp", LocalDateTime.now().toString(),
+            "status", 500,
+            "error", "Storage Error",
+            "message", ex.getMessage()
+    ));
+}
+```
+
+**When it occurs:**
+- MinIO connection failure
+- Bucket creation/access errors
+- File upload/download stream errors
+- Storage provider unavailability
+
+---
+
+#### 3. Max Upload Size Handler (413)
+```java
+@ExceptionHandler(MaxUploadSizeExceededException.class)
+public ResponseEntity<Map<String, Object>> handleMaxUploadSize(MaxUploadSizeExceededException ex) {
+    log.warn("File too large: {}", ex.getMessage());
+    return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE).body(Map.of(
+            "timestamp", LocalDateTime.now().toString(),
+            "status", 413,
+            "error", "File Too Large",
+            "message", "File size exceeds the maximum allowed limit"
+    ));
+}
+```
+
+**When it occurs:**
+- Uploaded file size exceeds configured limit
+- Configure `spring.servlet.multipart.max-file-size` to adjust limit
+
+**Configuration Example:**
+```yaml
+spring:
+  servlet:
+    multipart:
+      max-file-size: 100MB
+      max-request-size: 100MB
+```
+
+---
+
+#### 4. Bad Request Handler (400)
+```java
+@ExceptionHandler(IllegalArgumentException.class)
+public ResponseEntity<Map<String, Object>> handleIllegalArgument(IllegalArgumentException ex) {
+    log.warn("Bad request: {}", ex.getMessage());
+    return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
+            "timestamp", LocalDateTime.now().toString(),
+            "status", 400,
+            "error", "Bad Request",
+            "message", ex.getMessage()
+    ));
+}
+```
+
+**When it occurs:**
+- Invalid request parameters
+- Missing required fields
+- Invalid data format
+
+---
+
+#### 5. General Exception Handler (500)
+```java
+@ExceptionHandler(Exception.class)
+public ResponseEntity<Map<String, Object>> handleGeneral(Exception ex) {
+    log.error("Unexpected error: {}", ex.getMessage(), ex);
+    return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of(
+            "timestamp", LocalDateTime.now().toString(),
+            "status", 500,
+            "error", "Internal Server Error",
+            "message", "An unexpected error occurred"
+    ));
+}
+```
+
+**When it occurs:**
+- Unexpected/unhandled exceptions
+- Database connection errors
+- Runtime errors
+
+---
+
+### Error Response Examples
+
+#### File Not Found Example
+```bash
+curl -X GET "http://localhost:8080/api/files/invalid-id/download" \
+  -H "X-Api-Key: your-api-key"
+```
+
+**Response:**
+```json
+{
+  "timestamp": "2026-03-06T10:30:45.123456",
+  "status": 404,
+  "error": "Not Found",
+  "message": "File not found with id: invalid-id"
+}
+```
+
+---
+
+#### File Too Large Example
+```bash
+curl -X POST "http://localhost:8080/api/files" \
+  -H "X-Api-Key: your-api-key" \
+  -F "file=@large-file.zip"
+```
+
+**Response:**
+```json
+{
+  "timestamp": "2026-03-06T10:30:45.123456",
+  "status": 413,
+  "error": "File Too Large",
+  "message": "File size exceeds the maximum allowed limit"
+}
+```
+
+---
+
+#### Storage Error Example
+```bash
+curl -X POST "http://localhost:8080/api/files" \
+  -H "X-Api-Key: your-api-key" \
+  -F "file=@document.pdf"
+```
+
+**Response (MinIO unreachable):**
+```json
+{
+  "timestamp": "2026-03-06T10:30:45.123456",
+  "status": 500,
+  "error": "Storage Error",
+  "message": "Failed to upload file to MinIO: Connection timeout"
+}
+```
+
+---
+
+### Logging
+
+All exceptions are logged with appropriate levels:
+
+- **WARN Level**: 
+  - `FileNotFoundException`
+  - `MaxUploadSizeExceededException`
+  - `IllegalArgumentException`
+
+- **ERROR Level**:
+  - `StorageException`
+  - Generic `Exception`
+
+**Log Output Example:**
+```
+2026-03-06 10:30:45.123 WARN  [...FileStorageApplication] File not found: File not found with id: 550e8400...
+2026-03-06 10:30:46.456 ERROR [...FileStorageApplication] Storage error: Failed to upload file to MinIO: Connection timeout
+```
+
+---
+
+### Best Practices for Error Handling
+
+1. **Always Check API Responses**
+   - Check HTTP status code first
+   - Parse error JSON for detailed messages
+
+2. **Implement Retry Logic**
+   - Retry on 500 errors (storage/server errors)
+   - Implement exponential backoff
+
+3. **Handle Specific Exceptions**
+   - Handle 404 errors when downloading files
+   - Handle 413 errors by splitting large files
+   - Handle 500 errors by retrying
+
+4. **Example Error Handling Code**
+   ```java
+   try {
+       // File upload operation
+       fileService.uploadFile(file, apiKey);
+   } catch (FileNotFoundException e) {
+       // Handle file not found (shouldn't happen in upload)
+       log.error("File error: {}", e.getMessage());
+   } catch (StorageException e) {
+       // Handle storage errors - could retry
+       log.error("Storage failed, retrying...", e);
+       // Implement retry logic
+   } catch (Exception e) {
+       // Handle unexpected errors
+       log.error("Unexpected error: {}", e.getMessage());
+   }
+   ```
 
 ---
 
@@ -180,6 +523,10 @@ spring:
   jpa:
     hibernate:
       ddl-auto: update
+  servlet:
+    multipart:
+      max-file-size: 100MB
+      max-request-size: 100MB
 
 storage:
   provider: minio
@@ -231,7 +578,7 @@ Body:
 - file: (binary file)
 ```
 
-**Response:**
+**Successful Response (200):**
 ```json
 {
   "id": "550e8400-e29b-41d4-a716-446655440000",
@@ -245,6 +592,16 @@ Body:
 }
 ```
 
+**Error Response (413 - File Too Large):**
+```json
+{
+  "timestamp": "2026-03-06T10:30:45.123",
+  "status": 413,
+  "error": "File Too Large",
+  "message": "File size exceeds the maximum allowed limit"
+}
+```
+
 ---
 
 #### Download File
@@ -253,8 +610,18 @@ GET /api/files/{fileId}/download
 X-Api-Key: your-api-key
 ```
 
-**Response:**
+**Successful Response (200):**
 - Binary file data with appropriate Content-Type and Content-Disposition headers
+
+**Error Response (404 - Not Found):**
+```json
+{
+  "timestamp": "2026-03-06T10:30:45.123",
+  "status": 404,
+  "error": "Not Found",
+  "message": "File not found with id: 550e8400-e29b-41d4-a716-446655440000"
+}
+```
 
 **Example:**
 ```bash
@@ -271,7 +638,7 @@ GET /api/files/{fileId}
 X-Api-Key: your-api-key
 ```
 
-**Response:**
+**Successful Response (200):**
 ```json
 {
   "id": "550e8400-e29b-41d4-a716-446655440000",
@@ -290,6 +657,16 @@ X-Api-Key: your-api-key
 }
 ```
 
+**Error Response (404 - Not Found):**
+```json
+{
+  "timestamp": "2026-03-06T10:30:45.123",
+  "status": 404,
+  "error": "Not Found",
+  "message": "File not found with id: 550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
 ---
 
 #### Delete File
@@ -298,9 +675,19 @@ DELETE /api/files/{fileId}
 X-Api-Key: your-api-key
 ```
 
-**Response:**
+**Successful Response (204 - No Content):**
 ```
-204 No Content
+Empty body
+```
+
+**Error Response (404 - Not Found):**
+```json
+{
+  "timestamp": "2026-03-06T10:30:45.123",
+  "status": 404,
+  "error": "Not Found",
+  "message": "File not found with id: 550e8400-e29b-41d4-a716-446655440000"
+}
 ```
 
 ---
@@ -314,6 +701,10 @@ X-Api-Key: your-api-key
 SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/filestorage
 SPRING_DATASOURCE_USERNAME=admin
 SPRING_DATASOURCE_PASSWORD=admin
+
+# File Upload Configuration
+SPRING_SERVLET_MULTIPART_MAX_FILE_SIZE=100MB
+SPRING_SERVLET_MULTIPART_MAX_REQUEST_SIZE=100MB
 
 # Storage Provider Configuration
 STORAGE_PROVIDER=minio
@@ -348,6 +739,11 @@ spring:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
 
+  servlet:
+    multipart:
+      max-file-size: ${MAX_FILE_SIZE:100MB}
+      max-request-size: ${MAX_REQUEST_SIZE:100MB}
+
 storage:
   provider: ${STORAGE_PROVIDER:minio}
   minio:
@@ -366,14 +762,15 @@ server:
 
 | Component | Technology |
 |-----------|------------|
-| **Language** | Java 11+ |
+| **Language** | Java 11+ (98.3%) |
 | **Framework** | Spring Boot 3.x |
 | **Build Tool** | Gradle 7.0+ |
 | **Database** | PostgreSQL |
 | **ORM** | JPA/Hibernate |
 | **Object Storage** | MinIO |
 | **Security** | Spring Security with API Key Authentication |
-| **Containerization** | Docker, Docker Compose |
+| **Exception Handling** | Global Exception Handler |
+| **Containerization** | Docker, Docker Compose (1.7%) |
 | **API** | RESTful API |
 | **Logging** | SLF4J with Logback |
 
@@ -400,6 +797,10 @@ file-storage/
 │   │   │   ├── storage/
 │   │   │   │   ├── StorageProvider.java         # Storage interface
 │   │   │   │   └── MinioStorageProvider.java    # MinIO implementation
+│   │   │   ├── exception/
+│   │   │   │   ├── GlobalExceptionHandler.java  # Exception handling
+│   │   │   │   ├── FileNotFoundException.java    # Custom exception
+│   │   │   │   └── StorageException.java        # Custom exception
 │   │   │   ├── filter/
 │   │   │   │   └── ApiKeyFilter.java            # Security filter
 │   │   │   ├── config/
@@ -431,6 +832,7 @@ file-storage/
 - **CORS Support** - Configurable cross-origin requests
 - **Input Validation** - File validation before storage
 - **Secure Headers** - Proper Content-Type and Content-Disposition headers
+- **Comprehensive Exception Handling** - No stack traces exposed to clients
 
 ### Best Practices
 - Store API keys securely in environment variables
@@ -438,6 +840,7 @@ file-storage/
 - Use HTTPS in production
 - Implement rate limiting for API endpoints
 - Monitor file access and operations
+- Check error responses for debugging (timestamps and messages)
 
 ---
 
@@ -548,8 +951,8 @@ Contributions are welcome! Please follow these guidelines:
 - Reference issues: `Fixes #123`
 - Examples:
   - `feat(upload): add file compression support`
-  - `fix(security): validate api key format`
-  - `docs(readme): update configuration section`
+  - `fix(exception): improve error handling for storage failures`
+  - `docs(readme): update error handling documentation`
 
 ---
 
@@ -559,6 +962,7 @@ Found a bug? Please create an issue with:
 - Clear description of the problem
 - Steps to reproduce
 - Expected and actual behavior
+- Error response (including timestamp and message)
 - Environment details (Java version, OS, etc.)
 - Screenshots or logs (if applicable)
 
@@ -590,13 +994,16 @@ This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) 
 - [ ] Add file preview generation
 - [ ] Implement file compression
 - [ ] Add audit logging
+- [ ] Add API documentation with Swagger/OpenAPI
 - [ ] Create admin dashboard
+- [ ] Implement custom exception responses with error codes
 
 ---
 
 ## 📚 Additional Resources
 
 - [Spring Boot Documentation](https://spring.io/projects/spring-boot)
+- [Spring Exception Handling](https://spring.io/blog/2013/11/01/exception-handling-in-spring-mvc)
 - [MinIO Documentation](https://min.io/docs/)
 - [Spring Security](https://spring.io/projects/spring-security)
 - [PostgreSQL Documentation](https://www.postgresql.org/docs/)
@@ -612,8 +1019,8 @@ This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) 
 
 ---
 
-**Last Updated**: March 5, 2026  
-**Version**: 1.0.0
+**Last Updated**: March 6, 2026  
+**Version**: 1.1.0
 
 <div align="center">
 
